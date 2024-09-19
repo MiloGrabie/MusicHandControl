@@ -1,0 +1,2 @@
+ninja: Entering directory `D:\AndroidStudioProjects\MusicHandControl\opencv\.cxx\Debug\41kn1z11\arm64-v8a'
+ninja: no work to do.
