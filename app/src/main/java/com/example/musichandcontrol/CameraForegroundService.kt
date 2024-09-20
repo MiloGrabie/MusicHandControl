@@ -26,7 +26,6 @@ import com.google.mediapipe.formats.proto.LandmarkProto
 import com.google.mediapipe.formats.proto.LandmarkProto.NormalizedLandmarkList
 import com.google.mediapipe.solutions.hands.Hands
 import com.google.mediapipe.solutions.hands.HandsResult
-import java.nio.ByteBuffer
 import android.media.ImageReader
 import android.media.Image
 import android.content.Context
@@ -35,7 +34,6 @@ import android.graphics.Rect
 import android.graphics.YuvImage
 import com.google.mediapipe.solutions.hands.HandsOptions
 import java.io.ByteArrayOutputStream
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 class CameraForegroundService : Service() {
@@ -54,6 +52,8 @@ class CameraForegroundService : Service() {
             Pair(0, 17), Pair(17, 18), Pair(18, 19), Pair(19, 20),
             Pair(5, 9), Pair(9, 13), Pair(13, 17)
         )
+        const val ACTION_RESTART_SERVICE = "ACTION_RESTART_SERVICE"
+
     }
 
     private lateinit var cameraThread: HandlerThread
@@ -79,7 +79,7 @@ class CameraForegroundService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Hand Gesture Service")
             .setContentText("Controlling media playback with hand gestures")
-//            .setSmallIcon(R.drawable.ic_notification) // Replace with your app's icon
+            .setSmallIcon(R.drawable.baseline_waving_hand_24) // Replace with your app's icon
             .build()
         try {
             startForeground(NOTIFICATION_ID, notification)
@@ -87,6 +87,16 @@ class CameraForegroundService : Service() {
             Log.e(TAG, "Erreur lors du démarrage du service en avant-plan", e)
         }
 
+    }
+
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RESTART_SERVICE) {
+            Log.d(TAG, "Restarting service")
+            stopSelf()
+            startForegroundService()
+        }
+        return START_STICKY
     }
 
     private fun createNotificationChannel() {
@@ -144,14 +154,18 @@ class CameraForegroundService : Service() {
 
     private fun startCaptureSession() {
         val imageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
-        imageReader.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage()
-            if (image != null) {
-                val bitmap = imageToBitmap(image)
-                processFrame(bitmap)
-                image.close()
-            }
-        }, cameraHandler)
+        try {
+            imageReader.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage()
+                if (image != null) {
+                    val bitmap = imageToBitmap(image)
+                    processFrame(bitmap)
+                    image.close()
+                }
+            }, cameraHandler)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         try {
             val captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
@@ -176,15 +190,6 @@ class CameraForegroundService : Service() {
         }
     }
 
-//    private fun imageToBitmap(image: Image): Bitmap {
-//        val nv21 = yuv420ToNv21(image)
-//        val yuvImage = android.graphics.YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-//        val out = java.io.ByteArrayOutputStream()
-//        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, image.width, image.height), 100, out)
-//        val imageBytes = out.toByteArray()
-//        return android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-//    }
-//
     private fun yuv420ToNv21(image: Image): ByteArray {
         val width = image.width
         val height = image.height
@@ -246,106 +251,73 @@ class CameraForegroundService : Service() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
-        val timestamp = System.nanoTime() / 1000
-        hands.send(bitmap, timestamp)
+        try {
+            val timestamp = System.nanoTime() / 1000
+            hands.send(bitmap, timestamp)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing frame", e)
+        }
     }
 
     private fun processHandTrackingResult(result: HandsResult) {
-        handLandmarks = result.multiHandLandmarks()
-        if (handLandmarks.isNotEmpty()) {
-            val currentTime = System.currentTimeMillis()
-            val landmarks = handLandmarks[0]
+        try {
+            handLandmarks = result.multiHandLandmarks()
+            if (handLandmarks.isNotEmpty()) {
+                val currentTime = System.currentTimeMillis()
+                val landmarks = handLandmarks[0]
 
-            when {
-                detectPinchAndMoveGesture(landmarks) -> {
-                    val direction = getPinchMoveDirection()
-                    if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
-                        if (direction == PinchMoveDirection.LEFT) {
-                            Log.d(TAG, "Gesture detected: Pinch and Move Left")
-                            mediaController?.transportControls?.skipToPrevious()
+                when {
+                    detectClosedHand(landmarks) -> {
+                        if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
+                            Log.d(TAG, "Gesture detected: Closed Hand")
+                            mediaController?.transportControls?.pause()
                             lastGestureTime = currentTime
-                        } else if (direction == PinchMoveDirection.RIGHT) {
-                            Log.d(TAG, "Gesture detected: Pinch and Move Right")
+                        }
+                    }
+                    detectPinch(landmarks) -> {
+                        if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
+                            Log.d(TAG, "Gesture detected: Pinch")
                             mediaController?.transportControls?.skipToNext()
                             lastGestureTime = currentTime
                         }
                     }
-                }
-                detectClosedHand(landmarks) -> {
-                    if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
-                        Log.d(TAG, "Gesture detected: Closed Hand")
-                        mediaController?.transportControls?.pause()
-                        lastGestureTime = currentTime
-                    }
-                }
-                detectOpenHand(landmarks) -> {
-                    if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
-                        Log.d(TAG, "Gesture detected: Open Hand")
-                        mediaController?.transportControls?.play()
-                        lastGestureTime = currentTime
+                    detectOpenHand(landmarks) -> {
+                        if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
+                            Log.d(TAG, "Gesture detected: Open Hand")
+                            mediaController?.transportControls?.play()
+                            lastGestureTime = currentTime
+                        }
                     }
                 }
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing hand tracking result", e)
         }
     }
 
-    private var pinchMoveStartTime: Long = 0
-    private var pinchMoveStartX: Float? = null
-    private val PINCH_MOVE_DURATION = 1000 // 1 second
-    private val PINCH_MOVE_SPEED_THRESHOLD = 0.1f // Adjust this threshold based on testing
-    private val PINCH_MOVE_THRESHOLD = 0.005f // Adjust this threshold based on testing
-    private var pinchMoveDirection : PinchMoveDirection? = null
+    private var pinchStartTime: Long = 0
+    private val PINCH_THRESHOLD = 500 // 1 second in milliseconds
 
-    private enum class PinchMoveDirection { LEFT, RIGHT }
-
-    private fun detectPinchAndMoveGesture(landmarks: NormalizedLandmarkList): Boolean {
+    private fun detectPinch(landmarks: NormalizedLandmarkList): Boolean {
         val thumb = landmarks.landmarkList[4]
         val index = landmarks.landmarkList[8]
 
         // Check if thumb and index are close (pinched)
         val isPinched = distance(thumb, index) < 0.05f // Adjust this threshold as needed
 
-        if (!isPinched) {
-            pinchMoveStartTime = 0
-            pinchMoveStartX = null
-            pinchMoveDirection = null
-            return false
-        }
-
-        val currentPinchX = (thumb.x + index.x) / 2 // Average X position of thumb and index
         val currentTime = System.currentTimeMillis()
-
-        if (pinchMoveStartX == null) {
-            pinchMoveStartX = currentPinchX
-            pinchMoveStartTime = currentTime
-            return false
-        }
-
-        val duration = currentTime - pinchMoveStartTime
-        val distance = abs(currentPinchX - pinchMoveStartX!!)
-        val speed = distance / (duration / 1000f) // Speed in units per second
-
-        // Set the direction as soon as we detect movement
-        if (pinchMoveDirection == null && distance > PINCH_MOVE_THRESHOLD) {
-            pinchMoveDirection = if (currentPinchX < pinchMoveStartX!!) PinchMoveDirection.LEFT else PinchMoveDirection.RIGHT
-        }
-
-        if (duration >= PINCH_MOVE_DURATION && speed >= PINCH_MOVE_SPEED_THRESHOLD) {
-            // Reset for the next gesture
-            val detectedDirection = pinchMoveDirection
-            pinchMoveStartTime = 0
-            pinchMoveStartX = null
-            pinchMoveDirection = null
-
-            return detectedDirection != null
+        if (isPinched) {
+            if (pinchStartTime == 0L) {
+                pinchStartTime = currentTime
+            } else if (currentTime - pinchStartTime >= PINCH_THRESHOLD) {
+                pinchStartTime = 0L // Reset the timer after a successful pinch
+                return true
+            }
+        } else {
+            pinchStartTime = 0L
         }
 
         return false
-    }
-
-
-    private fun getPinchMoveDirection(): PinchMoveDirection? {
-        return pinchMoveDirection
     }
 
     private fun detectClosedHand(landmarks: NormalizedLandmarkList): Boolean {
@@ -371,6 +343,9 @@ class CameraForegroundService : Service() {
         return extendedFingers <= 1
     }
 
+    private var openHandStartTime: Long = 0
+    private val OPEN_HAND_THRESHOLD = 1000 // 1 second in milliseconds
+
     private fun detectOpenHand(landmarks: NormalizedLandmarkList): Boolean {
         val wrist = landmarks.landmarkList[0]
 
@@ -390,8 +365,25 @@ class CameraForegroundService : Service() {
             }
         }
 
-        // Return true if index finger is extended and other fingers are closed
-        return indexExtended && otherFingersClosed
+        // Add pinch ignorer
+        val thumb = landmarks.landmarkList[4]
+        val isPinched = distance(thumb, indexTip) < 0.05f // Adjust this threshold as needed
+
+        val isOpenHand = indexExtended && otherFingersClosed && !isPinched
+
+        val currentTime = System.currentTimeMillis()
+        if (isOpenHand) {
+            if (openHandStartTime == 0L) {
+                openHandStartTime = currentTime
+            } else if (currentTime - openHandStartTime >= OPEN_HAND_THRESHOLD) {
+                openHandStartTime = 0L // Reset the timer after a successful open hand gesture
+                return true
+            }
+        } else {
+            openHandStartTime = 0L
+        }
+
+        return false
     }
 
     private fun distance(a: LandmarkProto.NormalizedLandmark, b: LandmarkProto.NormalizedLandmark): Float {
@@ -405,11 +397,18 @@ class CameraForegroundService : Service() {
         return null
     }
 
+
     override fun onDestroy() {
         super.onDestroy()
         // Clean up resources
         cameraDevice.close()
         cameraThread.quitSafely()
         hands.close()
+
+        // Restart the service if the app is still running
+        val intent = Intent(applicationContext, CameraForegroundService::class.java)
+        intent.action = ACTION_RESTART_SERVICE
+        applicationContext.startService(intent)
     }
+
 }
