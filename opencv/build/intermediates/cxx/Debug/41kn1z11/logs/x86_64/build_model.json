@@ -27,6 +27,9 @@
     "variantName": "debug",
     "isDebuggableEnabled": true,
     "validAbiList": [
+      "armeabi-v7a",
+      "arm64-v8a",
+      "x86",
       "x86_64"
     ],
     "buildTargetSet": [
@@ -144,7 +147,6 @@
         "rootBuildGradleFolder": "D:\\AndroidStudioProjects\\MusicHandControl",
         "sdkFolder": "C:\\Users\\Milo\\AppData\\Local\\Android\\Sdk",
         "isBuildOnlyTargetAbiEnabled": true,
-        "ideBuildTargetAbi": "x86_64",
         "isCmakeBuildCohabitationEnabled": false,
         "isPrefabEnabled": false
       },

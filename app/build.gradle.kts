@@ -69,6 +69,8 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.vision.common)
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.media:media:1.6.0")
+    implementation(libs.androidx.media3.session)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

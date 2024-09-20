@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">MusicHandControl</string>
+    <string name="accessibility_service_description">Music Hand Control Accessibility Service</string>
 </resources>
