@@ -2,27 +2,36 @@ package com.example.musichandcontrol
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
-import android.util.Log
+import android.widget.Toast
 
 class HandGestureAccessibilityService : AccessibilityService() {
-    companion object {
-        private const val TAG = "HandGestureAccessibility"
-    }
 
     override fun onServiceConnected() {
-        Log.d(TAG, "HandGestureAccessibilityService connected")
-        // Start the MainActivity in the background
-        val intent = Intent(this, MainActivity::class.java)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(intent)
+        super.onServiceConnected()
+        // Start the camera foreground service
+        val intent = Intent(this, CameraForegroundService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // We don't need to handle any accessibility events
+        // Handle accessibility events if needed
     }
 
     override fun onInterrupt() {
-        // Handle interruption if needed
+        // Handle service interruption
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Stop the camera service when the accessibility service is destroyed
+        val intent = Intent(this, CameraForegroundService::class.java)
+        stopService(intent)
     }
 }

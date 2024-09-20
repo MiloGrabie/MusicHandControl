@@ -1,35 +1,33 @@
 package com.example.musichandcontrol
 
-import CameraManager
 import android.Manifest
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.SurfaceView
+import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import org.opencv.android.CameraBridgeViewBase
-import org.opencv.android.JavaCameraView
-import org.opencv.android.OpenCVLoader
 
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var cameraManager: CameraManager
-    private lateinit var mOpenCvCameraView: JavaCameraView
+class MainActivity : ComponentActivity() {
 
     companion object {
-        private const val CAMERA_PERMISSION_REQUEST = 100
-        private const val ACCESSIBILITY_SETTINGS_REQUEST = 101
+        private const val CAMERA_PERMISSION_REQUEST = 1
+        private const val ACCESSIBILITY_SERVICE_REQUEST = 2
+        private const val NOTIFICATION_LISTENER_REQUEST = 3
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Request camera permission
+        // Request Camera Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -38,116 +36,134 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(Manifest.permission.CAMERA),
                 CAMERA_PERMISSION_REQUEST
             )
-        }
-        // Initialize OpenCV
-        if (!OpenCVLoader.initDebug()) {
-            Toast.makeText(this, "Unable to load OpenCV!", Toast.LENGTH_LONG).show()
-            finish()
-            return
-        }
-
-        // Check and request camera permission
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
         } else {
-            initializeApp()
+            checkAccessibilityServiceEnabled()
         }
     }
 
-    private fun initializeApp() {
-        // Check if accessibility service is enabled
-        if (!isAccessibilityServiceEnabled()) {
-            Toast.makeText(this, "Please enable the accessibility service for this app", Toast.LENGTH_LONG).show()
-            accessibilitySettingsLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    private fun checkAccessibilityServiceEnabled() {
+        if (!isAccessibilityServiceEnabled(this, HandGestureAccessibilityService::class.java)) {
+            // Prompt the user to enable the accessibility service
+            Toast.makeText(
+                this,
+                "Please enable the Hand Gesture Accessibility Service",
+                Toast.LENGTH_LONG
+            ).show()
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            startActivityForResult(intent, ACCESSIBILITY_SERVICE_REQUEST)
         } else {
-            initializeCameraManager()
+            checkNotificationAccess()
         }
     }
 
-    private val accessibilitySettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (isAccessibilityServiceEnabled()) {
-            initializeCameraManager()
+
+    private fun checkNotificationAccess() {
+        if (!isNotificationServiceEnabled(this)) {
+            // Prompt the user to enable the notification listener service
+            Toast.makeText(
+                this,
+                "Please enable Notification Access for this app",
+                Toast.LENGTH_LONG
+            ).show()
+            val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+            startActivityForResult(intent, NOTIFICATION_LISTENER_REQUEST)
         } else {
-            Toast.makeText(this, "Accessibility service is required. Please try again.", Toast.LENGTH_LONG).show()
-            finish()
+            // All permissions are granted, start the services if needed
+            startServices()
+            finish() // Close the activity if you don't need to show any UI
         }
     }
 
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val accessibilityEnabled = Settings.Secure.getInt(
-            contentResolver,
-            Settings.Secure.ACCESSIBILITY_ENABLED,
-            0
-        )
-        if (accessibilityEnabled == 1) {
-            val services = Settings.Secure.getString(
-                contentResolver,
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            )
-            if (services != null) {
-                return services.contains("${packageName}/${HandGestureAccessibilityService::class.java.name}")
-            }
+    private fun startServices() {
+        // Start the accessibility service if needed
+        val intent = Intent(this, HandGestureAccessibilityService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        // The notification listener service is started by the system when enabled
+    }
+
+    private fun isNotificationServiceEnabled(context: Context): Boolean {
+        val cn = ComponentName(context, MediaControlNotificationListener::class.java)
+        val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+        return flat != null && flat.contains(cn.flattenToString())
+    }
+
+    private fun startAccessibilityService() {
+        val intent = Intent(this, HandGestureAccessibilityService::class.java)
+        // The accessibility service starts itself when enabled; you don't need to start it manually
+        // However, starting the service explicitly can help in some cases
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(
+        context: Context,
+        accessibilityServiceClass: Class<out AccessibilityService>
+    ): Boolean {
+        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val enabledServices =
+            am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+        for (service in enabledServices) {
+            val enabledServiceInfo = service.resolveInfo.serviceInfo
+            if (enabledServiceInfo.packageName == context.packageName &&
+                enabledServiceInfo.name == accessibilityServiceClass.name
+            ) return true
         }
         return false
     }
 
-    private fun initializeCameraManager() {
-        cameraManager = CameraManager(this)
-//        cameraManager.initialize(this)
-//
-//        // Add the camera view to the layout
-//        val cameraView = cameraManager.getCameraView()
-//        setContentView(cameraView)
-//        cameraManager.enableCameraView()
-
-
-        // Create camera view programmatically
-        mOpenCvCameraView = JavaCameraView(this, CameraBridgeViewBase.CAMERA_ID_FRONT)
-        mOpenCvCameraView.visibility = SurfaceView.VISIBLE
-//        mOpenCvCameraView.setCvCameraViewListener(this)
-
-        // Set the camera view as the content view
-        setContentView(mOpenCvCameraView)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (!OpenCVLoader.initDebug()) {
-            if (OpenCVLoader.initLocal()) {
-                mOpenCvCameraView.enableView()
-            } else {
-            }
-        } else {
-            mOpenCvCameraView.enableView()
-        }
-//        cameraManager.enableCameraView()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        cameraManager.disableCameraView()
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                initializeApp()
+            if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
+                checkAccessibilityServiceEnabled()
             } else {
-                Toast.makeText(this, "Camera permission is required for this app", Toast.LENGTH_LONG).show()
-                finish()
+                Toast.makeText(
+                    this,
+                    "Camera permission is required for this app to function.",
+                    Toast.LENGTH_LONG
+                ).show()
+                // Optionally, you can close the app or keep prompting
             }
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == ACCESSIBILITY_SETTINGS_REQUEST) {
-            if (isAccessibilityServiceEnabled()) {
-                initializeCameraManager()
-            } else {
-                Toast.makeText(this, "Accessibility service is required. Please try again.", Toast.LENGTH_LONG).show()
-                finish()
+        when (requestCode) {
+            ACCESSIBILITY_SERVICE_REQUEST -> {
+                if (isAccessibilityServiceEnabled(this, HandGestureAccessibilityService::class.java)) {
+                    checkNotificationAccess()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Accessibility service not enabled. Please enable it for the app to function.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            NOTIFICATION_LISTENER_REQUEST -> {
+                if (isNotificationServiceEnabled(this)) {
+                    // All permissions are granted, start the services if needed
+                    startServices()
+                    finish() // Close the activity if you don't need to show any UI
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Notification access not granted. Please enable it for the app to function.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
