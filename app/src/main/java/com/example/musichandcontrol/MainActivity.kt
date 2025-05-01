@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -75,12 +76,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startServices() {
-        // Start the accessibility service if needed
-        val intent = Intent(this, HandGestureAccessibilityService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+
+            // Start the accessibility service if needed
+            val intent = Intent(this, HandGestureAccessibilityService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        }
+        catch (e: Exception){
+            Log.e("TAG", "Erreur lors de l'ouverture de la caméra", e)
         }
         // The notification listener service is started by the system when enabled
     }

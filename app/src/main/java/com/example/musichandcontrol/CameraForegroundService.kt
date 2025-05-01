@@ -32,6 +32,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.Looper
 import com.google.mediapipe.solutions.hands.HandsOptions
 import java.io.ByteArrayOutputStream
 import kotlin.math.sqrt
@@ -53,6 +54,7 @@ class CameraForegroundService : Service() {
             Pair(5, 9), Pair(9, 13), Pair(13, 17)
         )
         const val ACTION_RESTART_SERVICE = "ACTION_RESTART_SERVICE"
+        private const val CHECK_INTERVAL = 5000L // Check every 60 seconds
 
     }
 
@@ -64,13 +66,28 @@ class CameraForegroundService : Service() {
     private var lastGestureTime: Long = 0
     private val GESTURE_COOLDOWN = 1500 // ms cooldown between gestures
     private var mediaController: MediaController? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val checkMediaControllerRunnable = object : Runnable {
+        override fun run() {
+            checkAndReinitializeMediaController()
+            handler.postDelayed(this, CHECK_INTERVAL)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         initializeCamera()
         initializeMediaPipe()
         initializeMediaController()
-        startForegroundService()
+        handler.post(checkMediaControllerRunnable)
+        //startForegroundService()
+    }
+
+    private fun checkAndReinitializeMediaController() {
+        if (mediaController == null) {
+            Log.d(TAG, "MediaController is null, attempting to reinitialize")
+            initializeMediaController()
+        }
     }
 
     @SuppressLint("ForegroundServiceType")
@@ -137,8 +154,13 @@ class CameraForegroundService : Service() {
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
-            cameraDevice = camera
-            startCaptureSession()
+            try{
+                cameraDevice = camera
+                startCaptureSession()
+            }
+            catch (e: Exception){
+                Log.e(TAG, "Erreur lors de l'ouverture de la caméra", e)
+            }
         }
 
         override fun onDisconnected(camera: CameraDevice) {
@@ -240,15 +262,23 @@ class CameraForegroundService : Service() {
         }
     }
 
+
     private fun initializeMediaController() {
         val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        val mediaControllers = mediaSessionManager.getActiveSessions(ComponentName(this, MediaControlNotificationListener::class.java))
-        if (mediaControllers.isNotEmpty()) {
-            mediaController = mediaControllers[0]
-        } else {
-            Log.e(TAG, "No active media sessions found")
+        val componentName = ComponentName(this, MediaControlNotificationListener::class.java)
+        try {
+            val controllers = mediaSessionManager.getActiveSessions(componentName)
+            if (controllers.isNotEmpty()) {
+                mediaController = controllers[0]
+                Log.d(TAG, "MediaController reinitialized successfully")
+            } else {
+                Log.w(TAG, "No active media sessions found")
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception when initializing MediaController", e)
         }
     }
+
 
     private fun processFrame(bitmap: Bitmap) {
         try {
@@ -266,18 +296,24 @@ class CameraForegroundService : Service() {
                 val currentTime = System.currentTimeMillis()
                 val landmarks = handLandmarks[0]
 
+                // Add distance check
+                if (isHandTooFar(landmarks)) {
+                    Log.d(TAG, "Hand is too far from the camera")
+                    return
+                }
+
                 when {
+                    detectTwoFingerUp(landmarks) -> {
+                        if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
+                            Log.d(TAG, "Gesture detected: Pinch")
+                            mediaController?.transportControls?.skipToNext()
+                            lastGestureTime = currentTime
+                        }
+                    }
                     detectClosedHand(landmarks) -> {
                         if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
                             Log.d(TAG, "Gesture detected: Closed Hand")
                             mediaController?.transportControls?.pause()
-                            lastGestureTime = currentTime
-                        }
-                    }
-                    detectPinch(landmarks) -> {
-                        if (currentTime - lastGestureTime > GESTURE_COOLDOWN) {
-                            Log.d(TAG, "Gesture detected: Pinch")
-                            mediaController?.transportControls?.skipToNext()
                             lastGestureTime = currentTime
                         }
                     }
@@ -293,6 +329,58 @@ class CameraForegroundService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Error processing hand tracking result", e)
         }
+    }
+
+
+    private fun isHandTooFar(landmarks: NormalizedLandmarkList): Boolean {
+        val wrist = landmarks.landmarkList[0]
+        val middleFinger = landmarks.landmarkList[12]
+
+        // Calculate the distance between wrist and middle finger tip
+        val distance = distance(wrist, middleFinger)
+
+        // You may need to adjust this threshold based on testing
+        val TOO_FAR_THRESHOLD = 0.15f
+
+        return distance < TOO_FAR_THRESHOLD
+    }
+
+    private var twoFingerUpStartTime: Long = 0
+    private val TWO_FINGER_UP_THRESHOLD = 500 // 0.5 seconds in milliseconds
+
+    private fun detectTwoFingerUp(landmarks: NormalizedLandmarkList): Boolean {
+        val wrist = landmarks.landmarkList[0]
+        val indexTip = landmarks.landmarkList[8]
+        val middleTip = landmarks.landmarkList[12]
+        val ringTip = landmarks.landmarkList[16]
+        val pinkyTip = landmarks.landmarkList[20]
+
+        val indexMCP = landmarks.landmarkList[5]
+        val middleMCP = landmarks.landmarkList[9]
+
+        // Check if index and middle fingers are extended
+        val indexExtended = distance(indexTip, wrist) > distance(indexMCP, wrist)
+        val middleExtended = distance(middleTip, wrist) > distance(middleMCP, wrist)
+
+        // Check if ring and pinky fingers are not extended
+        val ringNotExtended = distance(ringTip, wrist) <= distance(landmarks.landmarkList[13], wrist)
+        val pinkyNotExtended = distance(pinkyTip, wrist) <= distance(landmarks.landmarkList[17], wrist)
+
+        val isTwoFingerUp = indexExtended && middleExtended && ringNotExtended && pinkyNotExtended
+
+        val currentTime = System.currentTimeMillis()
+        if (isTwoFingerUp) {
+            if (twoFingerUpStartTime == 0L) {
+                twoFingerUpStartTime = currentTime
+            } else if (currentTime - twoFingerUpStartTime >= TWO_FINGER_UP_THRESHOLD) {
+                twoFingerUpStartTime = 0L // Reset the timer after a successful two finger up gesture
+                return true
+            }
+        } else {
+            twoFingerUpStartTime = 0L
+        }
+
+        return false
     }
 
     private var pinchStartTime: Long = 0
@@ -344,7 +432,7 @@ class CameraForegroundService : Service() {
     }
 
     private var openHandStartTime: Long = 0
-    private val OPEN_HAND_THRESHOLD = 1000 // 1 second in milliseconds
+    private val OPEN_HAND_THRESHOLD = 0 // 1 second in milliseconds
 
     private fun detectOpenHand(landmarks: NormalizedLandmarkList): Boolean {
         val wrist = landmarks.landmarkList[0]
@@ -400,6 +488,7 @@ class CameraForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(checkMediaControllerRunnable)
         // Clean up resources
         cameraDevice.close()
         cameraThread.quitSafely()
